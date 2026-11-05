@@ -49,8 +49,9 @@ enum Hooks {
         return matcher ? #"{"matcher": "*", \#(hooks)}"# : "{\(hooks)}"
     }
 
-    /// 我们插进去的条目（含旧版只在 Stop 里放的 `naiwa laugh`），后面紧跟的逗号一起去掉
-    static let ours = #"\{("matcher": "\*", )?"hooks": \[\{"type": "command", "command": "[^"]*naiwa (hook|laugh)"\}\]\},?"#
+    /// 我们插进去的条目（含旧版只在 Stop 里放的 `naiwa laugh`），后面紧跟的逗号一起去掉。
+    /// 路径带空格时 `binary` 会加单引号（`'/…/My Apps/naiwa' hook`），所以 `naiwa` 后面可以跟一个 `'`
+    static let ours = #"\{("matcher": "\*", )?"hooks": \[\{"type": "command", "command": "[^"]*naiwa'? (hook|laugh)"\}\]\},?"#
 
     static func install() throws {
         let fm = FileManager.default
