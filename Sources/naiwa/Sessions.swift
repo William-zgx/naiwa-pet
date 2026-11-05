@@ -22,6 +22,16 @@ final class Sessions {
 
     private(set) var all: [String: Session] = [:]
 
+    /// 干活 / 等你的会话这么久没动静就不算了（`prune`）
+    static let expiry: TimeInterval = 1800
+
+    /// 最早那个还算在干活 / 等你的会话什么时候过期；到点要重画一次，不然没有新事件奶蛙会一直停在原来的状态。
+    /// 先把已经过期的清掉，返回的总在将来（正在瞥的时候 render 不会 prune，不先清会一直立刻触发）
+    var nextExpiry: Date? {
+        prune()
+        return all.values.filter { $0.start != nil || $0.waiting != nil }.map { $0.seen.addingTimeInterval(Self.expiry) }.min()
+    }
+
     var mood: Mood {
         prune()
         if all.values.contains(where: { $0.waiting != nil }) { return .waiting }
@@ -58,6 +68,12 @@ final class Sessions {
             switch Self.notification(type: e["notification_type"] as? String, message: e["message"] as? String ?? "") {
             case .waiting(let text): s.waiting = text
             case .answered: s.waiting = nil
+            case .idle where s.waiting == nil:
+                // 打断一轮（Esc）不会有 Stop，这一轮就一直算在干活；Claude 说完一分钟你没理它，说明这一轮早结束了。
+                // 还在等你批准就什么都不动，批准以后这一轮接着计时
+                s.start = nil
+                s.tools = 0
+            case .idle: break
             case .ignore: break
             }
         case "Stop":
@@ -83,7 +99,7 @@ final class Sessions {
         return seconds >= Prefs.hugeSeconds ? .huge : .big
     }
 
-    enum NotificationKind { case waiting(String), answered, ignore }
+    enum NotificationKind { case waiting(String), answered, idle, ignore }
 
     /// 只有真的卡在你身上才算「等你」：要权限、MCP 弹表单问你、后台会话等你回话。
     /// Claude 说完 60 秒你没理它（idle_prompt）、登录成功之类都不算，不然做完的会话放着不管，奶蛙会一直盯着你。
@@ -95,6 +111,8 @@ final class Sessions {
             return .waiting("等你回复")
         case "elicitation_complete", "elicitation_response":
             return .answered
+        case "idle_prompt":
+            return .idle
         case .some:
             return .ignore
         case nil:
@@ -123,10 +141,10 @@ final class Sessions {
         return "\(s / 3600) 小时 \(s % 3600 / 60) 分"
     }
 
-    /// 会话没收到 Stop 就没了（Claude 被杀掉之类），半小时没动静就不算它还在干活
+    /// 会话没收到 Stop 就没了（Claude 被杀掉、一轮被打断之类），半小时没动静就不算它还在干活
     private func prune() {
         let now = Date()
-        for (id, s) in all where (s.start != nil || s.waiting != nil) && now.timeIntervalSince(s.seen) > 1800 {
+        for (id, s) in all where (s.start != nil || s.waiting != nil) && now.timeIntervalSince(s.seen) > Self.expiry {
             all[id]?.start = nil
             all[id]?.waiting = nil
         }

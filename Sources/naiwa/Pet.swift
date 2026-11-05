@@ -28,6 +28,7 @@ final class Pet {
     private var away = Pet.screenLocked()   // 屏幕睡了、锁屏了，或者切到了别的用户
     private var frameTimer: Timer?
     private var slotTimer: Timer?
+    private var expiryTimer: Timer?
     private var bubbleIsWaiting = false
     /// 鼠标停在它身上换出来的那只，到下个时段（或者换了安排）就不算了
     private var picked: String?
@@ -91,6 +92,21 @@ final class Pet {
             react(text: "\(f.project) 做完了 · \(Sessions.duration(f.seconds))")
         }
         render()
+        scheduleExpiry()
+    }
+
+    /// 一轮被打断（Esc）时 Claude Code 不发 Stop，之后也可能再没有事件：到最早那个会话过期时重画一次，回到该有的状态
+    private func scheduleExpiry() {
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        guard let at = sessions.nextExpiry else { return }
+        let t = Timer(fire: at.addingTimeInterval(1), interval: 0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.render()
+            self.scheduleExpiry()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        expiryTimer = t
     }
 
     // MARK: 状态

@@ -133,11 +133,11 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 |---|---|
 | `UserPromptSubmit` | 这一轮开始了，开始计时 |
 | `PreToolUse` / `PostToolUse` | 动了工具；要是刚才在等你批准，说明你批准了 |
-| `Notification` | 看 `notification_type`：`permission_prompt`、`elicitation_dialog`、`agent_needs_input` 算「等你」；`idle_prompt`（说完 60 秒你没理它）等其他提醒不算 |
+| `Notification` | 看 `notification_type`：`permission_prompt`、`elicitation_dialog`、`agent_needs_input` 算「等你」；`idle_prompt`（说完 60 秒你没理它）不算「等你」，但说明这一轮已经停了（按 Esc 打断时没有 `Stop`），不再算在干活；其他提醒不管 |
 | `Stop` | 这一轮结束：跑满门槛并且动过工具就瞥你一眼，否则什么都不做 |
 | `SessionEnd` | 会话关了，不再记它 |
 
-已知局限：Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。
+已知局限：Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。按 Esc 打断一轮时 Claude Code 不发任何事件：一分钟后的 `idle_prompt` 会让奶蛙回到空闲；连它也没有（比如没开 Notification）的话，半小时没动静也会回到空闲。
 
 **Codex**：只能接 `notify`，它只在一轮结束时通知，所以只能做到「做完瞥一眼」，没有干活、等你这些状态。在 `~/.codex/config.toml` 最上面加 `notify = ["/Users/你/.local/bin/naiwa", "glance"]`。Codex 只认一个 notify，已经有的话要自己串起来。
 
