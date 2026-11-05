@@ -60,7 +60,17 @@ enum Hooks {
     static func install() throws {
         let fm = FileManager.default
         let file = target
-        let original = (try? String(contentsOf: file, encoding: .utf8)) ?? "{}\n"
+        // 只有文件不存在才当成空的；读不了、不是 UTF-8 就停下，不然会拿 `{}` 把用户原来的配置盖掉
+        let original: String
+        if fm.fileExists(atPath: file.path) {
+            do {
+                original = try String(contentsOf: file, encoding: .utf8)
+            } catch {
+                throw Failure("读不了 \(file.path)（\(error.localizedDescription)），没有改动")
+            }
+        } else {
+            original = "{}\n"
+        }
         // 先去掉旧的（包括旧版的 `naiwa laugh`），再整套重新装
         let text = original.replacingOccurrences(of: ours, with: "", options: .regularExpression)
         let old = try parse(text)
