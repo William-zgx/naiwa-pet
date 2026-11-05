@@ -5,9 +5,15 @@ set -uo pipefail
 DEST=~/Applications/Naiwa.app
 BIN=~/.local/bin/naiwa
 AGENT=~/Library/LaunchAgents/com.nwverse.naiwa.plist
+SETTINGS=${NAIWA_CLAUDE_SETTINGS:-~/.claude/settings.json}
 
 if [ -x "$DEST/Contents/MacOS/naiwa" ]; then
-    "$DEST/Contents/MacOS/naiwa" hooks uninstall
+    # 撤不掉接入就什么都别删：删了 naiwa，settings.json 里的 hook 就指向一个不存在的文件。
+    # 没有 settings.json 就没什么可撤的
+    if [ -e "$SETTINGS" ] && ! "$DEST/Contents/MacOS/naiwa" hooks uninstall; then
+        echo "没能撤掉 Claude Code 接入，什么都没删。先手动删掉 ${SETTINGS} 的 hooks 里含 naiwa 的条目，再重跑这个脚本" >&2
+        exit 1
+    fi
     "$DEST/Contents/MacOS/naiwa" quit 2>/dev/null
 fi
 launchctl bootout "gui/$(id -u)/com.nwverse.naiwa" 2>/dev/null
