@@ -31,6 +31,10 @@ enum Hooks {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
     }
 
+    /// settings.json 实际所在的文件。它常被链接到 dotfiles 仓库里，而原子写是先写临时文件再改名，
+    /// 直接写链接会把链接换成普通文件、和仓库里那份断开，所以写的时候对着链接指向的那个文件
+    static var target: URL { settings.resolvingSymlinksInPath() }
+
     /// PATH 上的 naiwa，找不到就用当前可执行文件的绝对路径
     static var binary: String {
         let path = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":")
@@ -55,7 +59,8 @@ enum Hooks {
 
     static func install() throws {
         let fm = FileManager.default
-        let original = (try? String(contentsOf: settings, encoding: .utf8)) ?? "{}\n"
+        let file = target
+        let original = (try? String(contentsOf: file, encoding: .utf8)) ?? "{}\n"
         // 先去掉旧的（包括旧版的 `naiwa laugh`），再整套重新装
         let text = original.replacingOccurrences(of: ours, with: "", options: .regularExpression)
         let old = try parse(text)
@@ -80,13 +85,14 @@ enum Hooks {
             print("已经接入过了：\(settings.path)")
             return
         }
-        try fm.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fm.fileExists(atPath: settings.path) {
+        try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: file.path) {
+            // 备份链接指向的内容，不是链接本身
             let backup = settings.path + ".bak-naiwa"
             try? fm.removeItem(atPath: backup)
-            try fm.copyItem(atPath: settings.path, toPath: backup)
+            try fm.copyItem(atPath: file.path, toPath: backup)
         }
-        try new.write(to: settings, atomically: true, encoding: .utf8)
+        try new.write(to: file, atomically: true, encoding: .utf8)
         print("""
         已接入 Claude Code：\(settings.path)
           \(events.map(\.name).joined(separator: "、")) 各加了一条 `\(command)`（原文件备份在 .bak-naiwa）
@@ -95,7 +101,8 @@ enum Hooks {
     }
 
     static func uninstall() throws {
-        let text = try String(contentsOf: settings, encoding: .utf8)
+        let file = target
+        let text = try String(contentsOf: file, encoding: .utf8)
         guard containsOurs(try parse(text)) else {
             print("没有接入过")
             return
@@ -108,7 +115,7 @@ enum Hooks {
         guard let parsed = try? parse(new), !containsOurs(parsed) else {
             throw Failure("settings.json 被重新排版过，找不到原样那几段。请手动删掉 hooks 里含 `naiwa` 的条目")
         }
-        try new.write(to: settings, atomically: true, encoding: .utf8)
+        try new.write(to: file, atomically: true, encoding: .utf8)
         print("已撤掉：\(settings.path)")
     }
 
