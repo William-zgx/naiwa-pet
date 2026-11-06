@@ -82,6 +82,7 @@ final class ClipPlayer {
         kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
     ])
     private var onEnd: (() -> Void)?
+    private var playbackGeneration: UInt64 = 0
     private var endObserver: NSObjectProtocol?
 
     init(_ clip: Assets.Clip, fps: Double) {
@@ -105,11 +106,20 @@ final class ClipPlayer {
     }
 
     func play(onEnd: @escaping () -> Void) {
+        playbackGeneration &+= 1
+        let generation = playbackGeneration
         self.onEnd = onEnd
-        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in self?.player.play() }
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            // Seek completions can arrive after stop or another play. Serialize the check with those main-queue calls.
+            DispatchQueue.main.async { [weak self] in
+                guard finished, let self, self.playbackGeneration == generation else { return }
+                self.player.play()
+            }
+        }
     }
 
     func stop() {
+        playbackGeneration &+= 1
         onEnd = nil
         player.pause()
     }
