@@ -33,7 +33,39 @@ enum Hooks {
 
     /// settings.json 实际所在的文件。它常被链接到 dotfiles 仓库里，而原子写是先写临时文件再改名，
     /// 直接写链接会把链接换成普通文件、和仓库里那份断开，所以写的时候对着链接指向的那个文件
-    static var target: URL { settings.resolvingSymlinksInPath() }
+    static func target() throws -> URL {
+        let fm = FileManager.default
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        var remaining = Array((settings.path as NSString).pathComponents.dropFirst())
+        var links = 0
+        while !remaining.isEmpty {
+            let part = remaining.removeFirst()
+            if part == "." { continue }
+            if part == ".." { current.deleteLastPathComponent(); continue }
+            let next = current.appendingPathComponent(part)
+            let attributes: [FileAttributeKey: Any]?
+            do {
+                attributes = try fm.attributesOfItem(atPath: next.path)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                // 链接的目标可能还不存在；后面 install 会创建父目录和文件
+                attributes = nil
+            }
+            if attributes?[.type] as? FileAttributeType == .typeSymbolicLink {
+                links += 1
+                guard links <= 40 else { throw Failure("settings.json 的符号链接循环或层数太多，没有改动") }
+                let destination = try fm.destinationOfSymbolicLink(atPath: next.path)
+                var parts = (destination as NSString).pathComponents
+                if parts.first == "/" {
+                    current = URL(fileURLWithPath: "/", isDirectory: true)
+                    parts.removeFirst()
+                }
+                remaining = parts + remaining
+            } else {
+                current = next
+            }
+        }
+        return current
+    }
 
     /// PATH 上的 naiwa，找不到就用当前可执行文件的绝对路径
     static var binary: String {
@@ -59,7 +91,7 @@ enum Hooks {
 
     static func install() throws {
         let fm = FileManager.default
-        let file = target
+        let file = try target()
         // 只有文件不存在才当成空的；读不了、不是 UTF-8 就停下，不然会拿 `{}` 把用户原来的配置盖掉
         let original: String
         if fm.fileExists(atPath: file.path) {
@@ -99,8 +131,10 @@ enum Hooks {
         if fm.fileExists(atPath: file.path) {
             // 备份链接指向的内容，不是链接本身
             let backup = settings.path + ".bak-naiwa"
-            try? fm.removeItem(atPath: backup)
-            try fm.copyItem(atPath: file.path, toPath: backup)
+            // 只保留第一次安装前的原件；连悬空备份链接也不能覆盖
+            if !fm.fileExists(atPath: backup), (try? fm.destinationOfSymbolicLink(atPath: backup)) == nil {
+                try fm.copyItem(atPath: file.path, toPath: backup)
+            }
         }
         try new.write(to: file, atomically: true, encoding: .utf8)
         print("""
@@ -111,7 +145,7 @@ enum Hooks {
     }
 
     static func uninstall() throws {
-        let file = target
+        let file = try target()
         let text = try String(contentsOf: file, encoding: .utf8)
         guard containsOurs(try parse(text)) else {
             print("没有接入过")

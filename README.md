@@ -127,7 +127,7 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 
 ## 和 Claude Code 怎么对上的
 
-`naiwa hooks install` 在 `~/.claude/settings.json` 的六个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙：
+`naiwa hooks install` 在 `~/.claude/settings.json` 的六个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙。配置是符号链接时写入真实目标（目标还不存在时也保留链接）；`.bak-naiwa` 只保留第一次安装前的原件，重装不会覆盖已有备份：
 
 | 事件 | 奶蛙记下什么 |
 |---|---|
