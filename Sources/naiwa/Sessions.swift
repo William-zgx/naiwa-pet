@@ -3,15 +3,21 @@ import Foundation
 /// 根据 Claude Code 的 hook 事件给每个会话记账，判断奶蛙该是什么状态、一轮结束时值不值得瞥你一眼。
 /// 全在本地算，不调模型。
 final class Sessions {
-    enum Mood { case idle, working, waiting }
+    enum Mood: Equatable { case idle, working, waiting }
     enum Tier { case none, big, huge }
+
+    struct Waiting {
+        let text: String
+        let seen: Date
+    }
 
     struct Session {
         var cwd: String
-        var start: Date?          // 这一轮开始干活的时间（用户发消息，或者第一次调工具）
-        var tools = 0             // 这一轮调了几次工具
-        var waiting: String?      // 在等你批准什么
-        var outstandingTools: Set<String> = []  // 还没收到完成事件的 tool_use_id
+        var start: Date?                    // 这一轮开始干活的时间（用户发消息，或者第一次调工具）
+        var tools = 0                       // 这一轮调了几次工具
+        var waiting: [String: Waiting] = [:] // 按 tool/request ID 记在等你批准什么
+        var outstandingTools: Set<String> = [] // 还没收到完成事件的 tool_use_id
+        var latestToolUseID: String?         // 无 ID 的权限通知归到最近的 PreToolUse
         var seen: Date
     }
 
@@ -22,6 +28,7 @@ final class Sessions {
     }
 
     private(set) var all: [String: Session] = [:]
+    private static let unassignedRequest = ""
     private let dateProvider: () -> Date
 
     init(now: @escaping () -> Date = { Date() }) {
@@ -30,15 +37,18 @@ final class Sessions {
 
     var mood: Mood {
         prune()
-        if all.values.contains(where: { $0.waiting != nil }) { return .waiting }
+        if all.values.contains(where: { !$0.waiting.isEmpty }) { return .waiting }
         if all.values.contains(where: { $0.start != nil }) { return .working }
         return .idle
     }
 
-    /// 等你的那个会话：项目名和在等什么
+    /// 等你的那个请求：项目名、在等什么；同一个会话也可能同时等好几个请求
     var waitingText: String? {
-        guard let s = all.values.filter({ $0.waiting != nil }).max(by: { $0.seen < $1.seen }) else { return nil }
-        return "\(Self.project(s.cwd)) \(s.waiting!)"
+        let requests = all.values.flatMap { s -> [(project: String, waiting: Waiting)] in
+            s.waiting.values.map { (Self.project(s.cwd), $0) }
+        }
+        guard let latest = requests.max(by: { $0.waiting.seen < $1.waiting.seen }) else { return nil }
+        return "\(latest.project) \(latest.waiting.text)"
     }
 
     /// 处理一条 hook 事件；一轮结束时返回这一轮的结果
@@ -53,24 +63,41 @@ final class Sessions {
         case "UserPromptSubmit":
             s.start = now
             s.tools = 0
-            s.waiting = nil
+            s.waiting.removeAll()
             s.outstandingTools.removeAll()
+            s.latestToolUseID = nil
         case "PreToolUse":
-            s.waiting = nil
+            if let id = Self.requestID(e) {
+                s.outstandingTools.insert(id)
+                s.latestToolUseID = id
+                s.waiting[id] = nil
+            } else {
+                // naiwa demo 和旧版事件没有 ID，保留原来的单请求演示行为
+                s.waiting[Self.unassignedRequest] = nil
+            }
             s.tools += 1
             if s.start == nil { s.start = now }
-            if let toolUseID = e["tool_use_id"] as? String {
-                s.outstandingTools.insert(toolUseID)
-            }
         case "PostToolUse", "PostToolUseFailure":
-            s.waiting = nil
-            if let toolUseID = e["tool_use_id"] as? String {
-                s.outstandingTools.remove(toolUseID)
+            if let id = Self.requestID(e) {
+                s.outstandingTools.remove(id)
+                s.waiting[id] = nil
+            }
+            // 完全没有 PreToolUse ID 的旧事件只能挂在未分配请求上
+            if s.outstandingTools.isEmpty {
+                s.waiting[Self.unassignedRequest] = nil
             }
         case "Notification":
             switch Self.notification(type: e["notification_type"] as? String, message: e["message"] as? String ?? "") {
-            case .waiting(let text): s.waiting = text
-            case .answered: s.waiting = nil
+            case .waiting(let text):
+                let id = Self.requestID(e) ?? s.latestToolUseID ?? Self.unassignedRequest
+                s.waiting[id] = Waiting(text: text, seen: now)
+            case .answered:
+                if let id = Self.requestID(e) {
+                    s.waiting[id] = nil
+                } else {
+                    // 明确的完成/回复通知是旧版无 ID 事件唯一可靠的清除信号
+                    s.waiting.removeAll()
+                }
             case .ignore: break
             }
         case "Stop":
@@ -79,8 +106,9 @@ final class Sessions {
             finished = Finished(tier: Self.tier(seconds: seconds, tools: s.tools), project: Self.project(s.cwd), seconds: seconds)
             s.start = nil
             s.tools = 0
-            s.waiting = nil
+            s.waiting.removeAll()
             s.outstandingTools.removeAll()
+            s.latestToolUseID = nil
         case "SessionEnd":
             all[id] = nil
             return nil
@@ -95,6 +123,13 @@ final class Sessions {
     static func tier(seconds: TimeInterval, tools: Int) -> Tier {
         guard tools > 0, seconds >= Prefs.bigSeconds else { return .none }
         return seconds >= Prefs.hugeSeconds ? .huge : .big
+    }
+
+    static func requestID(_ e: [String: Any]) -> String? {
+        for key in ["tool_use_id", "request_id"] {
+            if let id = e[key] as? String, !id.isEmpty { return id }
+        }
+        return nil
     }
 
     enum NotificationKind { case waiting(String), answered, ignore }
@@ -141,10 +176,11 @@ final class Sessions {
     /// 有 tool_use_id 还没完成的会话不是 abandoned：合法构建或测试可以超过半小时。
     private func prune() {
         let now = dateProvider()
-        for (id, s) in all where (s.start != nil || s.waiting != nil) && s.outstandingTools.isEmpty && now.timeIntervalSince(s.seen) > 1800 {
+        for (id, s) in all where (s.start != nil || !s.waiting.isEmpty) && s.outstandingTools.isEmpty && now.timeIntervalSince(s.seen) > 1800 {
             all[id]?.start = nil
             all[id]?.tools = 0
-            all[id]?.waiting = nil
+            all[id]?.waiting.removeAll()
+            all[id]?.latestToolUseID = nil
         }
     }
 }
