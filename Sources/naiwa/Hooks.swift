@@ -8,7 +8,7 @@ import Foundation
 enum Hooks {
     static let events: [(name: String, matcher: Bool)] = [
         ("UserPromptSubmit", false), ("PreToolUse", true), ("PostToolUse", true),
-        ("Notification", false), ("Stop", false), ("SessionEnd", false),
+        ("PostToolUseFailure", true), ("Notification", false), ("Stop", false), ("SessionEnd", false),
     ]
 
     static func main(_ args: [String]) {

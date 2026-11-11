@@ -11,7 +11,8 @@ final class Sessions {
         var start: Date?          // 这一轮开始干活的时间（用户发消息，或者第一次调工具）
         var tools = 0             // 这一轮调了几次工具
         var waiting: String?      // 在等你批准什么
-        var seen = Date()
+        var outstandingTools: Set<String> = []  // 还没收到完成事件的 tool_use_id
+        var seen: Date
     }
 
     struct Finished {
@@ -21,6 +22,11 @@ final class Sessions {
     }
 
     private(set) var all: [String: Session] = [:]
+    private let dateProvider: () -> Date
+
+    init(now: @escaping () -> Date = { Date() }) {
+        dateProvider = now
+    }
 
     var mood: Mood {
         prune()
@@ -38,8 +44,8 @@ final class Sessions {
     /// 处理一条 hook 事件；一轮结束时返回这一轮的结果
     func handle(_ e: [String: Any]) -> Finished? {
         guard let event = e["hook_event_name"] as? String, let id = e["session_id"] as? String else { return nil }
-        let now = Date()
-        var s = all[id] ?? Session(cwd: e["cwd"] as? String ?? "")
+        let now = dateProvider()
+        var s = all[id] ?? Session(cwd: e["cwd"] as? String ?? "", seen: now)
         if let cwd = e["cwd"] as? String { s.cwd = cwd }
         s.seen = now
         var finished: Finished?
@@ -48,12 +54,19 @@ final class Sessions {
             s.start = now
             s.tools = 0
             s.waiting = nil
+            s.outstandingTools.removeAll()
         case "PreToolUse":
             s.waiting = nil
             s.tools += 1
             if s.start == nil { s.start = now }
+            if let toolUseID = e["tool_use_id"] as? String {
+                s.outstandingTools.insert(toolUseID)
+            }
         case "PostToolUse", "PostToolUseFailure":
             s.waiting = nil
+            if let toolUseID = e["tool_use_id"] as? String {
+                s.outstandingTools.remove(toolUseID)
+            }
         case "Notification":
             switch Self.notification(type: e["notification_type"] as? String, message: e["message"] as? String ?? "") {
             case .waiting(let text): s.waiting = text
@@ -67,6 +80,7 @@ final class Sessions {
             s.start = nil
             s.tools = 0
             s.waiting = nil
+            s.outstandingTools.removeAll()
         case "SessionEnd":
             all[id] = nil
             return nil
@@ -123,11 +137,13 @@ final class Sessions {
         return "\(s / 3600) 小时 \(s % 3600 / 60) 分"
     }
 
-    /// 会话没收到 Stop 就没了（Claude 被杀掉之类），半小时没动静就不算它还在干活
+    /// 会话没收到 Stop 就没了（Claude 被杀掉之类），半小时没动静就不算它还在干活。
+    /// 有 tool_use_id 还没完成的会话不是 abandoned：合法构建或测试可以超过半小时。
     private func prune() {
-        let now = Date()
-        for (id, s) in all where (s.start != nil || s.waiting != nil) && now.timeIntervalSince(s.seen) > 1800 {
+        let now = dateProvider()
+        for (id, s) in all where (s.start != nil || s.waiting != nil) && s.outstandingTools.isEmpty && now.timeIntervalSince(s.seen) > 1800 {
             all[id]?.start = nil
+            all[id]?.tools = 0
             all[id]?.waiting = nil
         }
     }

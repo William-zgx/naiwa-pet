@@ -127,12 +127,12 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 
 ## 和 Claude Code 怎么对上的
 
-`naiwa hooks install` 在 `~/.claude/settings.json` 的六个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙：
+`naiwa hooks install` 在 `~/.claude/settings.json` 的七个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙：
 
 | 事件 | 奶蛙记下什么 |
 |---|---|
 | `UserPromptSubmit` | 这一轮开始了，开始计时 |
-| `PreToolUse` / `PostToolUse` | 动了工具；要是刚才在等你批准，说明你批准了 |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | 按 `tool_use_id` 记下工具开始和完成；要是刚才在等你批准，说明你批准了 |
 | `Notification` | 看 `notification_type`：`permission_prompt`、`elicitation_dialog`、`agent_needs_input` 算「等你」；`idle_prompt`（说完 60 秒你没理它）等其他提醒不算 |
 | `Stop` | 这一轮结束：跑满门槛并且动过工具就瞥你一眼，否则什么都不做 |
 | `SessionEnd` | 会话关了，不再记它 |

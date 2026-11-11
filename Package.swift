@@ -6,5 +6,6 @@ let package = Package(
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(name: "naiwa", path: "Sources/naiwa"),
+        .testTarget(name: "naiwaTests", dependencies: ["naiwa"]),
     ]
 )
