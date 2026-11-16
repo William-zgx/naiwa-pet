@@ -137,6 +137,8 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 | `Stop` | 这一轮结束：跑满门槛并且动过工具就瞥你一眼，否则什么都不做 |
 | `SessionEnd` | 会话关了，不再记它 |
 
+已经装过 hook 的人升级后要重新跑一次 `naiwa hooks install`，才会补上 `PostToolUseFailure`；没补上时，失败的工具收不到完成事件，会一直算「还在跑」，最长 6 小时后才放弃。
+
 已知局限：Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。
 
 **Codex**：只能接 `notify`，它只在一轮结束时通知，所以只能做到「做完瞥一眼」，没有干活、等你这些状态。在 `~/.codex/config.toml` 最上面加 `notify = ["/Users/你/.local/bin/naiwa", "glance"]`。Codex 只认一个 notify，已经有的话要自己串起来。

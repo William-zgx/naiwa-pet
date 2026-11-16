@@ -16,7 +16,8 @@ final class Sessions {
         var start: Date?                    // 这一轮开始干活的时间（用户发消息，或者第一次调工具）
         var tools = 0                       // 这一轮调了几次工具
         var waiting: [String: Waiting] = [:] // 按 tool/request ID 记在等你批准什么
-        var outstandingTools: Set<String> = [] // 还没收到完成事件的 tool_use_id
+        var toolStarts: [String: Date] = [:] // 还没收到完成事件的 tool_use_id → 开始时间
+        var outstandingTools: Set<String> { Set(toolStarts.keys) }
         var latestToolUseID: String?         // 无 ID 的权限通知归到最近的 PreToolUse
         var seen: Date
     }
@@ -29,6 +30,9 @@ final class Sessions {
 
     private(set) var all: [String: Session] = [:]
     private static let unassignedRequest = ""
+    /// 没收到完成事件的工具最多算它还在跑这么久。工具被杀掉或被拒绝时没有 PostToolUse，不设上限会一直显示干活/等你。
+    /// 远大于 30 分钟，合法的长构建不受影响。
+    static let maxToolSeconds: TimeInterval = 6 * 3600
     private let dateProvider: () -> Date
 
     init(now: @escaping () -> Date = { Date() }) {
@@ -64,7 +68,7 @@ final class Sessions {
             s.start = now
             s.tools = 0
             s.waiting.removeAll()
-            s.outstandingTools.removeAll()
+            s.toolStarts.removeAll()
             s.latestToolUseID = nil
         case "PreToolUse":
             if let id = Self.requestID(e) {
@@ -73,10 +77,10 @@ final class Sessions {
                 // tool is still running the wait is kept, since parallel tools can legitimately wait for approval.
                 if s.outstandingTools.allSatisfy({ s.waiting[$0] != nil }) {
                     for answered in s.outstandingTools { s.waiting[answered] = nil }
-                    s.outstandingTools.removeAll()
+                    s.toolStarts.removeAll()
                     s.waiting[Self.unassignedRequest] = nil
                 }
-                s.outstandingTools.insert(id)
+                s.toolStarts[id] = now
                 s.latestToolUseID = id
                 s.waiting[id] = nil
             } else {
@@ -87,8 +91,10 @@ final class Sessions {
             if s.start == nil { s.start = now }
         case "PostToolUse", "PostToolUseFailure":
             if let id = Self.requestID(e) {
-                s.outstandingTools.remove(id)
+                s.toolStarts[id] = nil
                 s.waiting[id] = nil
+                // 已经结束的工具不能再接收无 ID 的通知，否则下一个工具开始时清不掉这条等待
+                if s.latestToolUseID == id { s.latestToolUseID = nil }
             }
             // 完全没有 PreToolUse ID 的旧事件只能挂在未分配请求上
             if s.outstandingTools.isEmpty {
@@ -115,7 +121,7 @@ final class Sessions {
             s.start = nil
             s.tools = 0
             s.waiting.removeAll()
-            s.outstandingTools.removeAll()
+            s.toolStarts.removeAll()
             s.latestToolUseID = nil
         case "SessionEnd":
             all[id] = nil
@@ -182,8 +188,17 @@ final class Sessions {
 
     /// 会话没收到 Stop 就没了（Claude 被杀掉之类），半小时没动静就不算它还在干活。
     /// 有 tool_use_id 还没完成的会话不是 abandoned：合法构建或测试可以超过半小时。
+    /// 没完成的工具超过 maxToolSeconds 也不再算（被杀掉或被拒绝的工具），之后会话按上面的规则清理。
     private func prune() {
         let now = dateProvider()
+        for (id, s) in all {
+            let expired = s.toolStarts.filter { now.timeIntervalSince($0.value) > Self.maxToolSeconds }.keys
+            for tool in expired {
+                all[id]?.toolStarts[tool] = nil
+                all[id]?.waiting[tool] = nil
+                if all[id]?.latestToolUseID == tool { all[id]?.latestToolUseID = nil }
+            }
+        }
         for (id, s) in all where (s.start != nil || !s.waiting.isEmpty) && s.outstandingTools.isEmpty && now.timeIntervalSince(s.seen) > 1800 {
             all[id]?.start = nil
             all[id]?.tools = 0

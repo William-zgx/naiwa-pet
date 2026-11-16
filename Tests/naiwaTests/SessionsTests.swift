@@ -188,6 +188,68 @@ final class SessionsTests: XCTestCase {
         XCTAssertEqual(sessions.all[sessionID]?.outstandingTools, ["tool-A", "tool-B", "tool-C"])
     }
 
+    func testStaleLatestToolIDDoesNotPinIdlessWaitAcrossNextTool() {
+        let sessions = Sessions()
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-A"))
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-A"))
+        _ = sessions.handle(notification("elicitation_dialog"))
+        XCTAssertEqual(sessions.mood, .waiting)
+
+        // The dialog was answered without a clearing event; the next tool must release it.
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-B"))
+
+        XCTAssertEqual(sessions.mood, .working)
+        XCTAssertNil(sessions.waitingText)
+    }
+
+    func testInterruptedToolIsDroppedAfterTheHardCap() {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+        let sessions = Sessions(now: { now })
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-killed"))
+
+        // Claude was killed mid-tool: no PostToolUse, no Stop, nothing for ten hours.
+        now.addTimeInterval(10 * 3600)
+
+        XCTAssertEqual(sessions.mood, .idle)
+        XCTAssertEqual(sessions.all[sessionID]?.outstandingTools, [])
+    }
+
+    func testToolJustUnderTheHardCapIsKept() {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+        let sessions = Sessions(now: { now })
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-long"))
+        now.addTimeInterval(Sessions.maxToolSeconds - 60)
+
+        XCTAssertEqual(sessions.mood, .working)
+        XCTAssertEqual(sessions.all[sessionID]?.outstandingTools, ["tool-long"])
+
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-long"))
+        guard let finished = sessions.handle(event("Stop")) else {
+            return XCTFail("Stop should finish the original session")
+        }
+        XCTAssertEqual(finished.seconds, Sessions.maxToolSeconds - 60, accuracy: 0.001)
+    }
+
+    func testDeniedToolNextToRunningToolIsDroppedByTheHardCap() {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+        let sessions = Sessions(now: { now })
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-denied"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-running"))
+        _ = sessions.handle(notification("permission_prompt", toolUseID: "tool-denied",
+                                         message: "Claude needs your permission to use Bash"))
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-running"))
+        XCTAssertEqual(sessions.mood, .waiting)
+
+        now.addTimeInterval(Sessions.maxToolSeconds + 1)
+
+        XCTAssertEqual(sessions.mood, .idle)
+        XCTAssertNil(sessions.waitingText)
+    }
+
     private func event(_ name: String, toolUseID: String? = nil) -> [String: Any] {
         var event: [String: Any] = [
             "hook_event_name": name,
