@@ -104,26 +104,35 @@ enum CLI {
     static func hook() {
         let data = FileHandle.standardInput.readDataToEndOfFile()
         if Link.send(.hook, data: data) { exit(0) }
-        // 奶蛙没开着：只在新一轮开始时把它叫出来（让它走过就不叫），不然这一轮没有开始时间，记不了账
-        guard !Prefs.dismissed,
-              let e = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              e["hook_event_name"] as? String == "UserPromptSubmit" else { exit(0) }
-        launch(["run"])
+        guard shouldLaunch(data, dismissed: Prefs.dismissed, hasAssets: { Assets.load() != nil }) else { exit(0) }
+        let pid = launch(["run"])
         for _ in 0..<20 {
             usleep(100_000)
             if Link.send(.hook, data: data) { break }
+            // 拉起来的那只已经退出了：别再白等
+            if let pid, waitpid(pid, nil, WNOHANG) == pid { break }
         }
         exit(0)
     }
 
+    /// 奶蛙没开着时要不要把它叫出来：只在新一轮开始时叫（让它走过就不叫），不然这一轮没有开始时间，记不了账。
+    /// 拉起来的是同一个可执行文件、同一套环境：这里找不到素材，它一起来也会退出，每次提交都白等 2 秒。
+    static func shouldLaunch(_ data: Data, dismissed: Bool, hasAssets: () -> Bool) -> Bool {
+        guard !dismissed,
+              let e = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              e["hook_event_name"] as? String == "UserPromptSubmit" else { return false }
+        return hasAssets()
+    }
+
     /// 在后台起一只奶蛙。打包成 .app 时走 open（交给 LaunchServices，跟调用方脱离关系），
-    /// 开发时直接把自己拉起来，并脱离当前会话。
-    static func launch(_ arguments: [String]) {
-        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    /// 开发时直接把自己拉起来，并脱离当前会话，返回它的 pid。
+    @discardableResult
+    static func launch(_ arguments: [String]) -> pid_t? {
+        let exe = executable()
         let bundle = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         if bundle.pathExtension == "app" {
             run("/usr/bin/open", ["-g", "-a", bundle.path, "--args"] + arguments)
-            return
+            return nil
         }
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
@@ -135,8 +144,14 @@ enum CLI {
         }
         let argv = ([exe.path] + arguments).map { strdup($0) } + [nil]
         var pid: pid_t = 0
-        posix_spawn(&pid, exe.path, &actions, &attr, argv, environ)
+        let ok = posix_spawn(&pid, exe.path, &actions, &attr, argv, environ) == 0
         argv.forEach { free($0) }
+        return ok ? pid : nil
+    }
+
+    /// 自己的可执行文件，软链解开。不能只看 argv[0]：从 PATH 上跑时它就是个 naiwa，会按当前目录去找
+    static func executable(argv0: String = CommandLine.arguments[0]) -> URL {
+        (Bundle.main.executableURL ?? URL(fileURLWithPath: argv0)).resolvingSymlinksInPath()
     }
 
     private static func run(_ path: String, _ arguments: [String]) {

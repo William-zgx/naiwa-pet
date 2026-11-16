@@ -53,11 +53,11 @@ func runPet(glanceOnStart: Bool) {
         if glanceOnStart { _ = Link.send(.glance) }
         exit(0)
     }
-    Prefs.dismissed = false
     guard let assets = Assets.load() else {
         FileHandle.standardError.write(Data("naiwa: 找不到素材目录（设置 NAIWA_ASSETS 或用打包好的 Naiwa.app）\n".utf8))
         exit(1)
     }
+    Prefs.dismissed = false
     Pet.shared = Pet(assets: assets)
     Pet.shared?.show()
     if glanceOnStart {

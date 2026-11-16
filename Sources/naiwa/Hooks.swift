@@ -7,8 +7,8 @@ import Foundation
 /// 写之前解析新旧两份，确认除了这几条以外完全一样才落盘，并留一份备份。
 enum Hooks {
     static let events: [(name: String, matcher: Bool)] = [
-        ("UserPromptSubmit", false), ("PreToolUse", true), ("PostToolUse", true),
-        ("PostToolUseFailure", true), ("Notification", false), ("Stop", false), ("SessionEnd", false),
+        ("UserPromptSubmit", false), ("PreToolUse", true), ("PostToolUse", true), ("PostToolUseFailure", true),
+        ("Notification", false), ("Stop", false), ("StopFailure", false), ("SessionEnd", false),
     ]
 
     static func main(_ args: [String]) {
@@ -24,37 +24,58 @@ enum Hooks {
         }
     }
 
+    /// 符号链接（dotfiles）解析到目标：读、备份、写都对目标做，链接本身不动
     static var settings: URL {
         if let path = ProcessInfo.processInfo.environment["NAIWA_CLAUDE_SETTINGS"] {
-            return URL(fileURLWithPath: path)
+            return URL(fileURLWithPath: path).resolvingSymlinksInPath()
         }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+            .resolvingSymlinksInPath()
     }
 
-    /// PATH 上的 naiwa，找不到就用当前可执行文件的绝对路径
+    /// PATH 上的 naiwa，找不到就用当前可执行文件的绝对路径（原样，不带引号）
     static var binary: String {
-        let path = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":")
+        ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":")
             .map { URL(fileURLWithPath: String($0)).appendingPathComponent("naiwa").path }
             .first { FileManager.default.isExecutableFile(atPath: $0) }
-            ?? URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-        return path.contains(" ") ? "'\(path)'" : path
+            ?? CLI.executable().path
     }
 
-    static var command: String { "\(binary) hook" }
+    /// 路径里有 shell 特殊字符就整段单引号括起来，里面的 ' 写成 '\''
+    static var command: String {
+        let plain = binary.allSatisfy { $0.isLetter || $0.isNumber || "/._-+@%:,=".contains($0) }
+        return (plain ? binary : "'" + binary.replacingOccurrences(of: "'", with: #"'\''"#) + "'") + " hook"
+    }
+
+    /// 带引号的 JSON 字符串，TOML 的基本字符串也认
+    static func quoted(_ s: String) -> String {
+        String(String(data: try! JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes]), encoding: .utf8)!
+            .dropFirst().dropLast())
+    }
 
     static func entry(matcher: Bool) -> String {
-        let cmd = String(data: try! JSONSerialization.data(withJSONObject: [command], options: [.withoutEscapingSlashes]), encoding: .utf8)!
-            .dropFirst().dropLast()
-        let hooks = #""hooks": [{"type": "command", "command": \#(cmd)}]"#
+        let hooks = #""hooks": [{"type": "command", "command": \#(quoted(command))}]"#
         return matcher ? #"{"matcher": "*", \#(hooks)}"# : "{\(hooks)}"
     }
 
-    /// 我们插进去的条目（含旧版只在 Stop 里放的 `naiwa laugh`），后面紧跟的逗号一起去掉
-    static let ours = #"\{("matcher": "\*", )?"hooks": \[\{"type": "command", "command": "[^"]*naiwa (hook|laugh)"\}\]\},?"#
+    /// 我们插进去的条目（含旧版只在 Stop 里放的 `naiwa laugh`；路径可能带引号）
+    static let ours = separated(#"\{("matcher": "\*", )?"hooks": \[\{"type": "command", "command": "([^"\\]|\\.)*naiwa'? (hook|laugh)"\}\]\}"#)
+
+    /// 连同分隔的逗号一起去掉：前面有逗号去前面的（它可能是最后一个），否则去后面的
+    static func separated(_ pattern: String) -> String { #",\s*\#(pattern)|\#(pattern)\s*,?"# }
 
     static func install() throws {
         let fm = FileManager.default
-        let original = (try? String(contentsOf: settings, encoding: .utf8)) ?? "{}\n"
+        // 只有文件不存在才从空对象开始；存在但读不出来就报错，不能当成空的覆盖掉
+        let original: String
+        if fm.fileExists(atPath: settings.path) {
+            guard let text = String(data: try Data(contentsOf: settings), encoding: .utf8) else {
+                throw Failure("\(settings.path) 不是 UTF-8 编码，没有写入。请先把它存成 UTF-8 再装")
+            }
+            original = text
+        } else {
+            original = "{}\n"
+        }
         // 先去掉旧的（包括旧版的 `naiwa laugh`），再整套重新装
         let text = original.replacingOccurrences(of: ours, with: "", options: .regularExpression)
         let old = try parse(text)
@@ -72,7 +93,7 @@ enum Hooks {
         }
         var expected = old
         expected["hooks"] = expectedHooks
-        guard NSDictionary(dictionary: try parse(new)).isEqual(to: expected) else {
+        guard NSDictionary(dictionary: try parse(new, strict: true)).isEqual(to: expected) else {
             throw Failure("插入后内容和预期不一致，没有写入。请手动加，见 `naiwa hooks`")
         }
         if new == original {
@@ -81,14 +102,16 @@ enum Hooks {
         }
         try fm.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: settings.path) {
+            // 只留第一次接入前的原件：之后再装，当前文件可能已经是装过、撤过的版本
             let backup = settings.path + ".bak-naiwa"
-            try? fm.removeItem(atPath: backup)
-            try fm.copyItem(atPath: settings.path, toPath: backup)
+            if !fm.fileExists(atPath: backup) {
+                try fm.copyItem(atPath: settings.path, toPath: backup)
+            }
         }
-        try new.write(to: settings, atomically: true, encoding: .utf8)
+        try write(new)
         print("""
         已接入 Claude Code：\(settings.path)
-          \(events.map(\.name).joined(separator: "、")) 各加了一条 `\(command)`（原文件备份在 .bak-naiwa）
+          \(events.map(\.name).joined(separator: "、")) 各加了一条 `\(command)`（第一次接入前的原文件备份在 .bak-naiwa）
           新开的 Claude Code 会话生效；已经开着的要重开
         """)
     }
@@ -102,13 +125,23 @@ enum Hooks {
         var new = text.replacingOccurrences(of: ours, with: "", options: .regularExpression)
         // 撤掉后剩下的空数组一起去掉（多是安装时新建的；空数组和没有这个键效果一样）
         for e in events {
-            new = new.replacingOccurrences(of: #""\#(e.name)": \[\],?"#, with: "", options: .regularExpression)
+            new = new.replacingOccurrences(of: separated(#""\#(e.name)": \[\]"#), with: "", options: .regularExpression)
         }
-        guard let parsed = try? parse(new), !containsOurs(parsed) else {
+        guard let parsed = try? parse(new, strict: true), !containsOurs(parsed) else {
             throw Failure("settings.json 被重新排版过，找不到原样那几段。请手动删掉 hooks 里含 `naiwa` 的条目")
         }
-        try new.write(to: settings, atomically: true, encoding: .utf8)
+        try write(new)
         print("已撤掉：\(settings.path)")
+    }
+
+    /// 原子写会换成新文件（默认 0644），写完把原来的权限设回去；settings.json 里可能有 token
+    static func write(_ text: String) throws {
+        let fm = FileManager.default
+        let permissions = try? fm.attributesOfItem(atPath: settings.path)[.posixPermissions]
+        try text.write(to: settings, atomically: true, encoding: .utf8)
+        if let permissions {
+            try fm.setAttributes([.posixPermissions: permissions], ofItemAtPath: settings.path)
+        }
     }
 
     /// 在 hooks.<event> 数组开头插入；没有这个事件就在 hooks 里加；没有 hooks 就在最外层加
@@ -140,11 +173,29 @@ enum Hooks {
         }
     }
 
-    static func parse(_ text: String) throws -> [String: Any] {
+    /// strict：JSONSerialization 放过 `,]` `,}` 这种多余的逗号，要落盘的内容另外查一遍
+    static func parse(_ text: String, strict: Bool = false) throws -> [String: Any] {
         guard let obj = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
             throw Failure("settings.json 不是一个 JSON 对象")
         }
+        if strict && hasTrailingComma(text) { throw Failure("settings.json 里有多余的逗号") }
         return obj
+    }
+
+    /// 跳过字符串，看 `]` `}` 前面最近的非空白字符是不是逗号
+    static func hasTrailingComma(_ text: String) -> Bool {
+        var inString = false, escaped = false, last: Character = " "
+        for c in text {
+            if inString {
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { inString = false }
+                continue
+            }
+            if c.isWhitespace { continue }
+            if (c == "]" || c == "}") && last == "," { return true }
+            if c == "\"" { inString = true }
+            last = c
+        }
+        return false
     }
 
     static func printSnippets() {
@@ -156,7 +207,7 @@ enum Hooks {
           }
 
         Codex（~/.codex/config.toml 最上面，[xxx] 表之前；已经有 notify 的话只能留一个）：
-          notify = ["\(binary.replacingOccurrences(of: "'", with: ""))", "glance"]
+          notify = [\(quoted(binary)), "glance"]
 
         其他任何命令行：长任务后面接一句
           make build; naiwa glance

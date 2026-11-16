@@ -4,7 +4,11 @@
 
 原生 Swift，没有声音，不抢焦点，不花 token。
 
-<p align="center"><img src="docs/demo.webp" width="240" alt="空闲 → 干活 → 等你批准 → 惊鸿一瞥"></p>
+[![奶蛙与 Clawd 的视频预览](docs/assets/promo-preview.webp)](#视频介绍)
+
+## 视频介绍
+
+https://github.com/user-attachments/assets/3b57d454-f4c0-4b1f-8327-81961681a8f9
 
 ## 所有奶蛙
 
@@ -127,32 +131,23 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 
 ## 和 Claude Code 怎么对上的
 
-`naiwa hooks install` 在 `~/.claude/settings.json` 的七个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙：
+`naiwa hooks install` 在 `~/.claude/settings.json` 的八个事件里各加一条 `naiwa hook`，每次触发时把事件转给奶蛙：
 
 | 事件 | 奶蛙记下什么 |
 |---|---|
 | `UserPromptSubmit` | 这一轮开始了，开始计时 |
-| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | 按 `tool_use_id`（和 `tool_name`）记下工具开始和完成；工具完成就清掉它自己的「等你批准」。新工具开始时，只有当所有没完成的工具都在等批准，才当作那些批准已经处理过（被拒绝的工具没有完成事件）；还有工具在跑就保留等待 |
+| `PreToolUse` / `PostToolUse` | 按 `tool_use_id` 和 `tool_name` 记录工具开始和完成，只清除匹配的权限等待；新工具开始时，如果所有未完成工具都在等批准，就清掉这些等待 |
+| `PostToolUseFailure` | 工具失败了，还在干；`is_interrupt` 为真多半是你在工具跑着时按 Esc 打断了；没有其他工具在跑时，这一轮结束，不瞥 |
 | `Notification` | 看 `notification_type`：`permission_prompt`、`elicitation_dialog`、`agent_needs_input` 算「等你」；`idle_prompt`（说完 60 秒你没理它）等其他提醒不算 |
-| `Stop` | 这一轮结束：跑满门槛并且动过工具就瞥你一眼，否则什么都不做 |
+| `Stop` | 这一轮结束：跑满门槛并且动过工具就瞥你一眼，否则什么都不做。别的 Stop hook 拦下来让它接着干（`stop_hook_active`）时算同一轮：时长从头算，一轮最多瞥一次 |
+| `StopFailure` | API 出错（限流、认证失败之类）结束了这一轮：回到空闲，不瞥 |
 | `SessionEnd` | 会话关了，不再记它 |
 
-已经装过 hook 的人升级后要重新跑一次 `naiwa hooks install`，才会补上 `PostToolUseFailure`；没补上时，失败的工具收不到完成事件，会一直算「还在跑」，最长 6 小时后才放弃。
+老版本装的只有六个事件，更新后重新跑一次 `naiwa hooks install`，补上 `PostToolUseFailure` 和 `StopFailure`。未收到完成事件的工具最长保留 6 小时；没有未完成工具的会话，半小时没动静后回到空闲。
 
-`Notification` 的 hook 输入没有 `tool_use_id`（只有 `message`、`title`、`notification_type`），所以「等你批准」归到哪个工具是推断的：恰好一个工具没完成时归它（不管它是不是最近开始的；另一个工具已经先完成也一样）；同时有好几个时，如果消息里点了工具名（`permission to use Bash`）而且只有一个没完成的工具叫这个名字，就归它；否则（没点工具名，或者同名的没完成工具不止一个，并行的 Bash 很常见）记成「不知道是哪个」，直到所有没完成的工具都结束、或这一轮 `Stop` / `UserPromptSubmit` / `SessionEnd`、或 6 小时上限才清。没完成的工具最多算它还在跑 6 小时。
+权限通知通常没有 `tool_use_id`。恰好一个工具未完成时归给它；多个工具并行时，如果消息提到的工具名只匹配一个未完成工具，就归给它，否则保留为未分配的等待（同名的并行 Bash 也属于这种情况）。未分配的等待要等所有工具完成、本轮结束、新消息或 6 小时上限才清除，所以被拒绝的并行工具仍可能让等待保留较久。超时由单次定时器触发，不依赖新事件。
 
-已知局限（都是已经发现、没有修的）：
-
-1. 你拒绝了一个工具（按 Esc）然后走开：它没有完成事件，还算「没完成」，会一直挡住 30 分钟静默规则，奶蛙最长 6 小时一直显示「等你批准」（main 上 30 分钟后就不显示了）。
-2. 你批准了一个跑得很久的工具：批准没有对应的 hook 事件，奶蛙在它完成之前一直显示「等你批准」。main 上就有这个问题，这个 PR 让它持续得更久。
-3. 没补上 `PostToolUseFailure` 的旧 hook：被中断的工具要 6 小时后才不算「还在跑」，之前是 30 分钟。
-4. 超过 6 小时的构建会被放弃，结束时没有瞥你一眼的反应（main 上 30 分钟就放弃，同样丢）。
-5. 6 小时上限只在读状态（`mood`）时检查，没有人读就不会清。
-6. 系统时间跳变：往回调会让工具多留一阵，时长甚至可能算成负数；往前跳 6 小时以上会把还在跑的工具放弃（不比 main 更糟）。
-7. 子代理（subagent）的工具和主会话用同一个 `session_id`，所以也记在同一个会话下（合理但没有实测）。
-8. 同时有多个工具、通知又归不到某一个（没点工具名，或同名的没完成工具不止一个，并行的 Bash 很常见）时，「不知道是哪个」的等待要等所有工具都结束才清。其中一个被拒绝、其他的先结束，会一直显示到 `Stop` / `UserPromptSubmit` / `SessionEnd` 或 6 小时上限；被批准的情况也一样：批准没有 hook 事件，等待会一直留到其他工具都结束。
-
-已知局限：Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。
+已知局限：在权限确认框上按 Esc 不发任何事件，奶蛙会一直「等你」；按 Esc 时如果没有工具在跑（还在想、还在写字）也不发事件，奶蛙会一直「干活」。这两种都要等你再发消息，或者到上述超时后回到空闲。批准本身没有 hook 事件，已批准的长任务也可能一直显示「等你」，直到完成。超过 6 小时的工具会被放弃，结束时可能没有反应。Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。
 
 **Codex**：只能接 `notify`，它只在一轮结束时通知，所以只能做到「做完瞥一眼」，没有干活、等你这些状态。在 `~/.codex/config.toml` 最上面加 `notify = ["/Users/你/.local/bin/naiwa", "glance"]`。Codex 只认一个 notify，已经有的话要自己串起来。
 
@@ -163,6 +158,16 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 [MIT](LICENSE)
 
 ## 开发
+
+### PR 检查与自动合并
+
+PR 会运行 `macOS checks`：检查脚本语法和素材配置 JSON，编译 Apple 芯片与 Intel 版本，打包通用 App，并验证架构、签名和 `pets` 命令。
+
+维护者给面向 `main` 的非草稿 PR 加上 `automerge` 标签后，会开启自动 squash 合并。必须通过检查、与最新 `main` 同步，并解决所有 review 对话，才会合入；分支落后时先点 **Update branch**，更新后会重新检查。首次贡献者的工作流可能需要维护者先批准运行。
+
+移除 `automerge` 标签、转为草稿或改投其他分支，会取消等待中的自动合并。不加标签的 PR 仍由维护者手动合并。CI 不验证桌面上的播放、锁屏停播和鼠标穿透；相关改动仍须按 `AGENTS.md` 在真机确认，再加标签。
+
+### 本地构建
 
 ```bash
 swift build -c release

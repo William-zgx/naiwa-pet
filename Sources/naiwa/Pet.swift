@@ -28,6 +28,7 @@ final class Pet {
     private var away = Pet.screenLocked()   // 屏幕睡了、锁屏了，或者切到了别的用户
     private var frameTimer: Timer?
     private var slotTimer: Timer?
+    private var expiryTimer: Timer?
     private var bubbleIsWaiting = false
     /// 鼠标停在它身上换出来的那只，到下个时段（或者换了安排）就不算了
     private var picked: String?
@@ -120,6 +121,7 @@ final class Pet {
         reloadIfEdited()
         if reacting { return }
         let mood = sessions.mood
+        scheduleExpiry()
         if mood == .waiting, let t = sessions.waitingText, bubble.text != t || !bubbleIsWaiting {
             bubbleIsWaiting = true
             bubble.show(t, above: panel.frame)
@@ -210,6 +212,18 @@ final class Pet {
         }
         RunLoop.main.add(t, forMode: .common)
         slotTimer = t
+    }
+
+    /// 会话半天没动静（打断、崩了没收到事件）到点自己回到空闲，不用等下一个事件
+    private func scheduleExpiry() {
+        let at = sessions.nextExpiry
+        if let t = expiryTimer, t.isValid, t.fireDate == at { return }
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        guard let at else { return }
+        let t = Timer(fire: at, interval: 0, repeats: false) { [weak self] _ in self?.render() }
+        RunLoop.main.add(t, forMode: .common)
+        expiryTimer = t
     }
 
     // MARK: 安排（哪个时段出来哪几只、干活时是哪只）

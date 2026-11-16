@@ -1,0 +1,34 @@
+name: Auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    name: Configure auto-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # This privileged workflow only reads PR metadata. Never check out or run PR code here.
+      - name: Reconcile the automerge label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          pr="$(gh pr view "$PR_NUMBER" --json state,isDraft,baseRefName,headRefOid,labels,autoMergeRequest)"
+          if jq -e '.state == "OPEN" and .baseRefName == "main" and (.isDraft | not) and any(.labels[]; .name == "automerge")' <<< "$pr" > /dev/null; then
+            head_sha="$(jq -r '.headRefOid' <<< "$pr")"
+            gh pr merge "$PR_NUMBER" --auto --squash --match-head-commit "$head_sha"
+          elif jq -e '.state == "OPEN" and .autoMergeRequest != null' <<< "$pr" > /dev/null; then
+            gh pr merge "$PR_NUMBER" --disable-auto
+          fi

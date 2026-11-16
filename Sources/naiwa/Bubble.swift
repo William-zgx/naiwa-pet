@@ -1,6 +1,6 @@
 import AppKit
 
-/// 奶蛙头顶的气泡：「music_viking 做完了 · 4 分 12 秒」「music_viking 等你批准 Bash」。
+/// 奶蛙头顶的气泡：「my-repo 做完了 · 4 分 12 秒」「my-repo 等你批准 Bash」。
 /// 单独一个不接鼠标的小窗，跟着奶蛙的窗口走。
 final class Bubble {
     private let panel: NSPanel

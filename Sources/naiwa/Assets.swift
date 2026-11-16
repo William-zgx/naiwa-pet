@@ -60,7 +60,7 @@ struct Assets {
         if let res = Bundle.main.resourceURL {
             out.append(res.appendingPathComponent("assets"))
         }
-        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var dir = CLI.executable().deletingLastPathComponent()
         // 经过 ~/.local/bin/naiwa 软链跑的时候 Bundle.main 认不出 App，按可执行文件的位置找 Contents/Resources/assets
         out.append(dir.deletingLastPathComponent().appendingPathComponent("Resources/assets"))
         for _ in 0..<5 {
