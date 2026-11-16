@@ -17,9 +17,24 @@ final class Sessions {
         var tools = 0                       // 这一轮调了几次工具
         var waiting: [String: Waiting] = [:] // 按 tool/request ID 记在等你批准什么
         var toolStarts: [String: Date] = [:] // 还没收到完成事件的 tool_use_id → 开始时间
+        var toolNames: [String: String] = [:] // 同上，tool_use_id → tool_name，用来给无 ID 的权限通知找主人
         var outstandingTools: Set<String> { Set(toolStarts.keys) }
         var latestToolUseID: String?         // 无 ID 的权限通知归到最近的 PreToolUse
         var seen: Date
+
+        mutating func finishTool(_ id: String) {
+            toolStarts[id] = nil
+            toolNames[id] = nil
+            waiting[id] = nil
+            // 已经结束的工具不能再接收无 ID 的通知，否则下一个工具开始时清不掉这条等待
+            if latestToolUseID == id { latestToolUseID = nil }
+        }
+
+        mutating func clearTools() {
+            toolStarts.removeAll()
+            toolNames.removeAll()
+            latestToolUseID = nil
+        }
     }
 
     struct Finished {
@@ -68,8 +83,7 @@ final class Sessions {
             s.start = now
             s.tools = 0
             s.waiting.removeAll()
-            s.toolStarts.removeAll()
-            s.latestToolUseID = nil
+            s.clearTools()
         case "PreToolUse":
             if let id = Self.requestID(e) {
                 // Only approvals are outstanding: a tool starting now means they were answered. A denied tool never
@@ -77,10 +91,11 @@ final class Sessions {
                 // tool is still running the wait is kept, since parallel tools can legitimately wait for approval.
                 if s.outstandingTools.allSatisfy({ s.waiting[$0] != nil }) {
                     for answered in s.outstandingTools { s.waiting[answered] = nil }
-                    s.toolStarts.removeAll()
+                    s.clearTools()
                     s.waiting[Self.unassignedRequest] = nil
                 }
                 s.toolStarts[id] = now
+                s.toolNames[id] = e["tool_name"] as? String
                 s.latestToolUseID = id
                 s.waiting[id] = nil
             } else {
@@ -91,10 +106,7 @@ final class Sessions {
             if s.start == nil { s.start = now }
         case "PostToolUse", "PostToolUseFailure":
             if let id = Self.requestID(e) {
-                s.toolStarts[id] = nil
-                s.waiting[id] = nil
-                // 已经结束的工具不能再接收无 ID 的通知，否则下一个工具开始时清不掉这条等待
-                if s.latestToolUseID == id { s.latestToolUseID = nil }
+                s.finishTool(id)
             }
             // 完全没有 PreToolUse ID 的旧事件只能挂在未分配请求上
             if s.outstandingTools.isEmpty {
@@ -103,7 +115,7 @@ final class Sessions {
         case "Notification":
             switch Self.notification(type: e["notification_type"] as? String, message: e["message"] as? String ?? "") {
             case .waiting(let text):
-                let id = Self.requestID(e) ?? s.latestToolUseID ?? Self.unassignedRequest
+                let id = Self.requestID(e) ?? Self.owner(of: text, in: s)
                 s.waiting[id] = Waiting(text: text, seen: now)
             case .answered:
                 if let id = Self.requestID(e) {
@@ -121,8 +133,7 @@ final class Sessions {
             s.start = nil
             s.tools = 0
             s.waiting.removeAll()
-            s.toolStarts.removeAll()
-            s.latestToolUseID = nil
+            s.clearTools()
         case "SessionEnd":
             all[id] = nil
             return nil
@@ -144,6 +155,20 @@ final class Sessions {
             if let id = e[key] as? String, !id.isEmpty { return id }
         }
         return nil
+    }
+
+    /// Notification 的 hook 输入没有 tool_use_id（只有 message / title / notification_type）。
+    /// 只有一个工具没完成时，通知肯定是它的；同时有好几个时不知道是哪个：
+    /// 通知里点了工具名而且只有一个没完成的工具叫这个名字就归它，否则记在未分配请求上，等所有没完成的工具都结束才清。
+    private static func owner(of text: String, in s: Session) -> String {
+        if s.toolStarts.count > 1 {
+            if text.hasPrefix("等你批准 "), let name = text.split(separator: " ").last {
+                let named = s.toolNames.filter { s.toolStarts[$0.key] != nil && $0.value == name }.keys
+                if named.count == 1, let id = named.first { return id }
+            }
+            return unassignedRequest
+        }
+        return s.latestToolUseID ?? unassignedRequest
     }
 
     enum NotificationKind { case waiting(String), answered, ignore }
@@ -194,10 +219,10 @@ final class Sessions {
         for (id, s) in all {
             let expired = s.toolStarts.filter { now.timeIntervalSince($0.value) > Self.maxToolSeconds }.keys
             for tool in expired {
-                all[id]?.toolStarts[tool] = nil
-                all[id]?.waiting[tool] = nil
-                if all[id]?.latestToolUseID == tool { all[id]?.latestToolUseID = nil }
+                all[id]?.finishTool(tool)
             }
+            // 没有未完成的工具了，挂在「不知道是哪个工具」上的等待也跟着结束
+            if !expired.isEmpty, all[id]?.toolStarts.isEmpty == true { all[id]?.waiting[Self.unassignedRequest] = nil }
         }
         for (id, s) in all where (s.start != nil || !s.waiting.isEmpty) && s.outstandingTools.isEmpty && now.timeIntervalSince(s.seen) > 1800 {
             all[id]?.start = nil
