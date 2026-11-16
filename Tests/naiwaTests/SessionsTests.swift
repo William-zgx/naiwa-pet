@@ -275,6 +275,41 @@ final class SessionsTests: XCTestCase {
         XCTAssertNil(sessions.waitingText)
     }
 
+    func testIDLessApprovalAfterTheLatestToolFinishedIsAttributedToTheOnlyOutstandingTool() {
+        let sessions = Sessions()
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-A"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-B"))
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-B"))
+        _ = sessions.handle(notification("permission_prompt",
+                                         message: "Claude needs your permission to use Bash"))
+
+        XCTAssertEqual(sessions.all[sessionID]?.waiting.keys.sorted(), ["tool-A"])
+        XCTAssertEqual(sessions.mood, .waiting)
+
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-A"))
+        XCTAssertNil(sessions.waitingText)
+        XCTAssertEqual(sessions.mood, .working)
+    }
+
+    func testDeniedToolAfterTheLatestToolFinishedIsReleasedByTheNextPreToolUse() {
+        let sessions = Sessions()
+        _ = sessions.handle(event("UserPromptSubmit"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-A"))
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-B"))
+        _ = sessions.handle(event("PostToolUse", toolUseID: "tool-B"))
+        _ = sessions.handle(notification("permission_prompt",
+                                         message: "Claude needs your permission to use Bash"))
+        XCTAssertEqual(sessions.mood, .waiting)
+
+        // A is denied: no PostToolUse for it. The next tool starting releases the wait.
+        _ = sessions.handle(event("PreToolUse", toolUseID: "tool-C"))
+
+        XCTAssertNil(sessions.waitingText)
+        XCTAssertEqual(sessions.mood, .working)
+        XCTAssertEqual(sessions.all[sessionID]?.outstandingTools, ["tool-C"])
+    }
+
     func testIDLessApprovalWithOneOutstandingToolStaysOnThatTool() {
         let sessions = Sessions()
         _ = sessions.handle(event("UserPromptSubmit"))

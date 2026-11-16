@@ -19,7 +19,7 @@ final class Sessions {
         var toolStarts: [String: Date] = [:] // 还没收到完成事件的 tool_use_id → 开始时间
         var toolNames: [String: String] = [:] // 同上，tool_use_id → tool_name，用来给无 ID 的权限通知找主人
         var outstandingTools: Set<String> { Set(toolStarts.keys) }
-        var latestToolUseID: String?         // 无 ID 的权限通知归到最近的 PreToolUse
+        var latestToolUseID: String?         // 最近一次 PreToolUse 的 ID（不再用来归属权限通知）
         var seen: Date
 
         mutating func finishTool(_ id: String) {
@@ -158,8 +158,9 @@ final class Sessions {
     }
 
     /// Notification 的 hook 输入没有 tool_use_id（只有 message / title / notification_type）。
-    /// 只有一个工具没完成时，通知肯定是它的；同时有好几个时不知道是哪个：
-    /// 通知里点了工具名而且只有一个没完成的工具叫这个名字就归它，否则记在未分配请求上，等所有没完成的工具都结束才清。
+    /// 恰好一个工具没完成时（不管它是不是最近开始的），通知就是它的；同时有好几个时不知道是哪个：
+    /// 通知里点了工具名而且只有一个没完成的工具叫这个名字就归它（名字有重复，比如并行的 Bash，就不算），
+    /// 否则记在未分配请求上，等所有没完成的工具都结束才清。
     private static func owner(of text: String, in s: Session) -> String {
         if s.toolStarts.count > 1 {
             if text.hasPrefix("等你批准 "), let name = text.split(separator: " ").last {
@@ -168,7 +169,7 @@ final class Sessions {
             }
             return unassignedRequest
         }
-        return s.latestToolUseID ?? unassignedRequest
+        return s.toolStarts.count == 1 ? s.toolStarts.keys.first! : unassignedRequest
     }
 
     enum NotificationKind { case waiting(String), answered, ignore }

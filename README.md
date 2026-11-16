@@ -139,7 +139,7 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 
 已经装过 hook 的人升级后要重新跑一次 `naiwa hooks install`，才会补上 `PostToolUseFailure`；没补上时，失败的工具收不到完成事件，会一直算「还在跑」，最长 6 小时后才放弃。
 
-`Notification` 的 hook 输入没有 `tool_use_id`（只有 `message`、`title`、`notification_type`），所以「等你批准」归到哪个工具是推断的：只有一个工具没完成时归它；同时有好几个时，如果消息里点了工具名（`permission to use Bash`）而且只有一个没完成的工具叫这个名字，就归它；否则记成「不知道是哪个」，直到所有没完成的工具都结束、或这一轮 `Stop` / `UserPromptSubmit` / `SessionEnd` 才清。没完成的工具最多算它还在跑 6 小时。
+`Notification` 的 hook 输入没有 `tool_use_id`（只有 `message`、`title`、`notification_type`），所以「等你批准」归到哪个工具是推断的：恰好一个工具没完成时归它（不管它是不是最近开始的；另一个工具已经先完成也一样）；同时有好几个时，如果消息里点了工具名（`permission to use Bash`）而且只有一个没完成的工具叫这个名字，就归它；否则（没点工具名，或者同名的没完成工具不止一个，并行的 Bash 很常见）记成「不知道是哪个」，直到所有没完成的工具都结束、或这一轮 `Stop` / `UserPromptSubmit` / `SessionEnd`、或 6 小时上限才清。没完成的工具最多算它还在跑 6 小时。
 
 已知局限（都是已经发现、没有修的）：
 
@@ -150,7 +150,7 @@ defaults write com.nwverse.naiwa bigSeconds -float 30
 5. 6 小时上限只在读状态（`mood`）时检查，没有人读就不会清。
 6. 系统时间跳变：往回调会让工具多留一阵，时长甚至可能算成负数；往前跳 6 小时以上会把还在跑的工具放弃（不比 main 更糟）。
 7. 子代理（subagent）的工具和主会话用同一个 `session_id`，所以也记在同一个会话下（合理但没有实测）。
-8. 同时有多个工具、通知又没点出工具名时，「等你批准」要等所有工具都结束才清；其中一个被拒绝、其他的先结束，会一直显示到这一轮结束。
+8. 同时有多个工具、通知又归不到某一个（没点工具名，或同名的没完成工具不止一个，并行的 Bash 很常见）时，「不知道是哪个」的等待要等所有工具都结束才清。其中一个被拒绝、其他的先结束，会一直显示到 `Stop` / `UserPromptSubmit` / `SessionEnd` 或 6 小时上限；被批准的情况也一样：批准没有 hook 事件，等待会一直留到其他工具都结束。
 
 已知局限：Claude 中途停下来等后台任务、或者停下来问你问题，从事件上看和「做完了」一样，只要时长够、动过工具也会有反应。
 
